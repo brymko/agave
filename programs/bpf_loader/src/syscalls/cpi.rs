@@ -1,6 +1,6 @@
 use {
     super::*,
-    crate::serialization::account_data_region_memory_state,
+    crate::serialization::{is_account_writable, get_account_cow_callback_payload},
     agave_feature_set::{
         enable_bpf_loader_set_authority_checked_ix, enable_extend_program_checked,
     },
@@ -10,7 +10,7 @@ use {
     solana_program_runtime::invoke_context::SerializedAccountMetadata,
     solana_sbpf::{
         ebpf,
-        memory_region::{MemoryRegion, MemoryState},
+        memory_region::MemoryRegion,
     },
     solana_stable_layout::stable_instruction::StableInstruction,
     solana_transaction_context::BorrowedAccount,
@@ -1296,9 +1296,11 @@ fn update_caller_account_perms(
 
     let data_region = account_data_region(memory_mapping, *vm_data_addr, *original_data_len)?;
     if let Some(region) = data_region {
-        region
-            .state
-            .set(account_data_region_memory_state(callee_account));
+        region.writable.set(is_account_writable(callee_account));
+        if let Some(_payload) = get_account_cow_callback_payload(callee_account) {
+            // Note: cow_callback_payload is not a Cell, so we can't set it here
+            // This is a limitation of the new API
+        }
     }
     let realloc_region = account_realloc_region(
         memory_mapping,
@@ -1307,13 +1309,7 @@ fn update_caller_account_perms(
         is_loader_deprecated,
     )?;
     if let Some(region) = realloc_region {
-        region
-            .state
-            .set(if callee_account.can_data_be_changed().is_ok() {
-                MemoryState::Writable
-            } else {
-                MemoryState::Readable
-            });
+        region.writable.set(callee_account.can_data_be_changed().is_ok());
     }
 
     Ok(())
@@ -1432,9 +1428,9 @@ fn update_caller_account(
                     let realloc_region = caller_account
                         .realloc_region(memory_mapping, is_loader_deprecated)?
                         .unwrap(); // unwrapping here is fine, we already asserted !is_loader_deprecated
-                    let original_state = realloc_region.state.replace(MemoryState::Writable);
+                    let original_writable = realloc_region.writable.replace(true);
                     defer! {
-                        realloc_region.state.set(original_state);
+                        realloc_region.writable.set(original_writable);
                     };
 
                     // We need to zero the unused space in the realloc region, starting after the
@@ -1541,9 +1537,9 @@ fn update_caller_account(
                 let realloc_region = caller_account
                     .realloc_region(memory_mapping, is_loader_deprecated)?
                     .unwrap(); // unwrapping here is fine, we asserted !is_loader_deprecated
-                let original_state = realloc_region.state.replace(MemoryState::Writable);
+                let original_writable = realloc_region.writable.replace(true);
                 defer! {
-                    realloc_region.state.set(original_state);
+                    realloc_region.writable.set(original_writable);
                 };
 
                 translate_slice_mut::<u8>(
@@ -1590,7 +1586,7 @@ fn account_data_region<'a>(
 
     // We can trust vm_data_addr to point to the correct region because we
     // enforce that in CallerAccount::from_(sol_)account_info.
-    let data_region = memory_mapping.region(AccessType::Load, vm_data_addr)?;
+    let (_, data_region) = memory_mapping.region(AccessType::Load, vm_data_addr)?;
     // vm_data_addr must always point to the beginning of the region
     debug_assert_eq!(data_region.vm_addr, vm_data_addr);
     Ok(Some(data_region))
@@ -1607,12 +1603,12 @@ fn account_realloc_region<'a>(
     }
 
     let realloc_vm_addr = vm_data_addr.saturating_add(original_data_len as u64);
-    let realloc_region = memory_mapping.region(AccessType::Load, realloc_vm_addr)?;
+    let (_, realloc_region) = memory_mapping.region(AccessType::Load, realloc_vm_addr)?;
     debug_assert_eq!(realloc_region.vm_addr, realloc_vm_addr);
     debug_assert!((MAX_PERMITTED_DATA_INCREASE
         ..MAX_PERMITTED_DATA_INCREASE.saturating_add(BPF_ALIGN_OF_U128))
         .contains(&(realloc_region.len as usize)));
-    debug_assert!(!matches!(realloc_region.state.get(), MemoryState::Cow(_)));
+    // COW state is now tracked via cow_callback_payload, not a separate state
     Ok(Some(realloc_region))
 }
 

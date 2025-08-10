@@ -355,11 +355,14 @@ fn create_memory_mapping<'a, 'b, C: ContextObject>(
     .chain(additional_regions)
     .collect();
 
+    let original_handler = transaction_context.account_data_write_access_handler();
+    let cow_callback = Box::new(move |index: u32| original_handler(index as u64));
+    
     Ok(MemoryMapping::new_with_cow(
         regions,
-        transaction_context.account_data_write_access_handler(),
         config,
         sbpf_version,
+        cow_callback,
     )?)
 }
 
@@ -1607,7 +1610,10 @@ fn execute<'a, 'b: 'a>(
     #[cfg(any(target_os = "windows", not(target_arch = "x86_64")))]
     let use_jit = false;
     #[cfg(all(not(target_os = "windows"), target_arch = "x86_64"))]
-    let use_jit = executable.get_compiled_program().is_some();
+    let use_jit = std::env::var("SOLANA_BPF_JIT_DISABLE").is_err() && executable.get_compiled_program().is_some();
+    
+    eprintln!("BPF_LOADER: JIT decision - SOLANA_BPF_JIT_DISABLE={:?}, use_jit={}", std::env::var("SOLANA_BPF_JIT_DISABLE"), use_jit);
+    
     let direct_mapping = invoke_context
         .get_feature_set()
         .is_active(&bpf_account_data_direct_mapping::id());
@@ -1655,7 +1661,9 @@ fn execute<'a, 'b: 'a>(
         create_vm_time.stop();
 
         vm.context_object_pointer.execute_time = Some(Measure::start("execute"));
+        eprintln!("BPF_LOADER: Calling vm.execute_program with interpreter_mode={}", !use_jit);
         let (compute_units_consumed, result) = vm.execute_program(executable, !use_jit);
+        eprintln!("BPF_LOADER: vm.execute_program returned: compute_units_consumed={}, result_ok={}", compute_units_consumed, result.is_ok());
         MEMORY_POOL.with_borrow_mut(|memory_pool| {
             memory_pool.put_stack(stack);
             memory_pool.put_heap(heap);

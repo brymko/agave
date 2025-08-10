@@ -8,7 +8,7 @@ use {
     solana_sbpf::{
         aligned_memory::{AlignedMemory, Pod},
         ebpf::{HOST_ALIGN, MM_INPUT_START},
-        memory_region::{MemoryRegion, MemoryState},
+        memory_region::MemoryRegion,
     },
     solana_sdk_ids::bpf_loader_deprecated,
     solana_system_interface::MAX_PERMITTED_DATA_LENGTH,
@@ -131,15 +131,17 @@ impl Serializer {
         account: &mut BorrowedAccount<'_>,
     ) -> Result<(), InstructionError> {
         if !account.get_data().is_empty() {
-            let region = match account_data_region_memory_state(account) {
-                MemoryState::Readable => MemoryRegion::new_readonly(account.get_data(), self.vaddr),
-                MemoryState::Writable => {
-                    MemoryRegion::new_writable(account.get_data_mut()?, self.vaddr)
-                }
-                MemoryState::Cow(index_in_transaction) => {
-                    MemoryRegion::new_cow(account.get_data(), self.vaddr, index_in_transaction)
-                }
+            let mut region = if account.can_data_be_changed().is_ok() {
+                MemoryRegion::new_writable(account.get_data_mut()?, self.vaddr)
+            } else {
+                MemoryRegion::new_readonly(account.get_data(), self.vaddr)
             };
+            
+            // Set cow_callback_payload for shared accounts
+            if account.can_data_be_changed().is_ok() && account.is_shared() {
+                region.cow_callback_payload = account.get_index_in_transaction() as u32;
+            }
+            
             self.vaddr += region.len;
             self.regions.push(region);
         }
@@ -620,15 +622,15 @@ fn deserialize_parameters_aligned<I: IntoIterator<Item = usize>>(
     Ok(())
 }
 
-pub(crate) fn account_data_region_memory_state(account: &BorrowedAccount<'_>) -> MemoryState {
-    if account.can_data_be_changed().is_ok() {
-        if account.is_shared() {
-            MemoryState::Cow(account.get_index_in_transaction() as u64)
-        } else {
-            MemoryState::Writable
-        }
+pub(crate) fn is_account_writable(account: &BorrowedAccount<'_>) -> bool {
+    account.can_data_be_changed().is_ok()
+}
+
+pub(crate) fn get_account_cow_callback_payload(account: &BorrowedAccount<'_>) -> Option<u32> {
+    if account.can_data_be_changed().is_ok() && account.is_shared() {
+        Some(account.get_index_in_transaction() as u32)
     } else {
-        MemoryState::Readable
+        None
     }
 }
 
