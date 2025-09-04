@@ -140,6 +140,7 @@ args=(
   --dynamic-port-range 8000-10000
   --limit-ledger-size 50000000
 )
+export AGAVE_IGNORE_ULIMIT=1
 # shellcheck disable=SC2086
 agave-validator "${args[@]}" $SOLANA_RUN_SH_VALIDATOR_ARGS &
 validator=$!

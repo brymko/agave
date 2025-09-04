@@ -1,3 +1,0 @@
-[submodule "sbpf-profiler"]
-	path = sbpf-profiler
-	url = https://github.com/serbangv/sbpf-profiler
